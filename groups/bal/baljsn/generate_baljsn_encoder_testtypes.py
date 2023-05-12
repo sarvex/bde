@@ -60,7 +60,7 @@ async def generate_components() -> ty_AsyncGenerator[str, None]:
     stdout = not_none_cast(process.stdout)
     while not stdout.at_eof():
         line: bytes = await stdout.readline()
-        if not stdout.at_eof or len(line) != 0:
+        if not stdout.at_eof or line:
             yield line.decode()
     await process.communicate()
 
@@ -107,7 +107,7 @@ async def main() -> None:
     rewrite_bdes_ident_to_bsls('./baljsn_encoder_testtypes.cpp')
 
 if __name__ == '__main__':
-    if not sys_version_info.major == 3 and sys_version_info.minor >= 6:
+    if sys_version_info.major != 3 and sys_version_info.minor >= 6:
         print("This program requires Python 3.6 or higher")
         sys_exit(1)
     aio_run(main())

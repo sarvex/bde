@@ -59,15 +59,13 @@ class LcovCobertura(object):
         return self.generate_cobertura_xml(coverage_data)
 
     def demangle_function_name(self, function_name):
-        if self.demangle:
-            if self.mangled_functions.has_key(function_name):
-                return self.mangled_functions[function_name]
-            else:
-                de_function_name = subprocess.Popen(["c++filt", function_name], stdout=subprocess.PIPE).communicate()[0]
-                self.mangled_functions[function_name] = de_function_name
-                return de_function_name
-        else:
+        if not self.demangle:
             return function_name
+        if self.mangled_functions.has_key(function_name):
+            return self.mangled_functions[function_name]
+        de_function_name = subprocess.Popen(["c++filt", function_name], stdout=subprocess.PIPE).communicate()[0]
+        self.mangled_functions[function_name] = de_function_name
+        return de_function_name
 
     def parse(self):
         """
@@ -91,33 +89,76 @@ class LcovCobertura(object):
         file_branches_covered = 0
 
         for line in self.lcov_data.split('\n'):
-            if line.strip() == 'end_of_record':
-                if current_file is not None:
-                    package_dict = coverage_data['packages'][package]
-                    package_dict['lines-total'] += file_lines_total
-                    package_dict['lines-covered'] += file_lines_covered
-                    package_dict['branches-total'] += file_branches_total
-                    package_dict['branches-covered'] += file_branches_covered
-                    file_dict = package_dict['classes'][current_file]
-                    file_dict['lines-total'] = file_lines_total
-                    file_dict['lines-covered'] = file_lines_covered
-                    file_dict['lines'] = dict(file_lines)
-                    file_dict['methods'] = dict(file_methods)
-                    file_dict['branches-total'] = file_branches_total
-                    file_dict['branches-covered'] = file_branches_covered
-                    coverage_data['summary']['lines-total'] += file_lines_total
-                    coverage_data['summary']['lines-covered'] += file_lines_covered
-                    coverage_data['summary']['branches-total'] += file_branches_total
-                    coverage_data['summary']['branches-covered'] += file_branches_covered
+            if line.strip() == 'end_of_record' and current_file is not None:
+                package_dict = coverage_data['packages'][package]
+                package_dict['lines-total'] += file_lines_total
+                package_dict['lines-covered'] += file_lines_covered
+                package_dict['branches-total'] += file_branches_total
+                package_dict['branches-covered'] += file_branches_covered
+                file_dict = package_dict['classes'][current_file]
+                file_dict['lines-total'] = file_lines_total
+                file_dict['lines-covered'] = file_lines_covered
+                file_dict['lines'] = dict(file_lines)
+                file_dict['methods'] = dict(file_methods)
+                file_dict['branches-total'] = file_branches_total
+                file_dict['branches-covered'] = file_branches_covered
+                coverage_data['summary']['lines-total'] += file_lines_total
+                coverage_data['summary']['lines-covered'] += file_lines_covered
+                coverage_data['summary']['branches-total'] += file_branches_total
+                coverage_data['summary']['branches-covered'] += file_branches_covered
 
             line_parts = line.split(':')
             input_type = line_parts[0]
 
-            if input_type == 'SF':
+            if input_type == 'BRDA':
+                # BRDA:1,1,2,0
+                (line_number, block_number, branch_number, branch_hits) = line_parts[-1].strip().split(',')
+                line_number = int(line_number)
+                if line_number not in file_lines:
+                    file_lines[line_number] = {
+                        'branch': 'true', 'branches-total': 0,
+                        'branches-covered': 0, 'hits': 0
+                    }
+                file_lines[line_number]['branch'] = 'true'
+                file_lines[line_number]['branches-total'] += 1
+                file_branches_total += 1
+                if branch_hits != '-' and int(branch_hits) > 0:
+                    file_lines[line_number]['branches-covered'] += 1
+                    file_branches_covered += 1
+            elif input_type == 'BRF':
+                file_branches_total = int(line_parts[1])
+            elif input_type == 'BRH':
+                file_branches_covered = int(line_parts[1])
+            elif input_type == 'DA':
+                # DA:2,0
+                (line_number, line_hits) = line_parts[-1].strip().split(',')
+                line_number = int(line_number)
+                if line_number not in file_lines:
+                    file_lines[line_number] = {
+                        'branch': 'false', 'branches-total': 0,
+                        'branches-covered': 0
+                    }
+                file_lines[line_number]['hits'] = line_hits
+                # Increment lines total/covered for class and package
+                if int(line_hits) > 0:
+                    file_lines_covered += 1
+                file_lines_total += 1
+            elif input_type == 'FN':
+                # FN:5,(anonymous_1)
+                function_name = line_parts[-1].strip().split(',')[1]
+                function_name = self.demangle_function_name(function_name)
+                file_methods[function_name] = '0'
+            elif input_type == 'FNDA':
+                # FNDA:0,(anonymous_1)
+                (function_hits, function_name) = line_parts[-1].strip().split(',')
+                function_name = self.demangle_function_name(function_name)
+                file_methods[function_name] = function_hits
+
+            elif input_type == 'SF':
                 # Get file name
                 file_name = line_parts[-1].strip()
                 relative_file_name = os.path.relpath(file_name, self.base_dir)
-                package = '.'.join(relative_file_name.split(os.path.sep)[0:-1])
+                package = '.'.join(relative_file_name.split(os.path.sep)[:-1])
                 class_name = file_name.split(os.path.sep)[-1]
                 if package not in coverage_data['packages']:
                     coverage_data['packages'][package] = {
@@ -138,50 +179,6 @@ class LcovCobertura(object):
                 file_methods.clear()
                 file_branches_total = 0
                 file_branches_covered = 0
-            elif input_type == 'DA':
-                # DA:2,0
-                (line_number, line_hits) = line_parts[-1].strip().split(',')
-                line_number = int(line_number)
-                if line_number not in file_lines:
-                    file_lines[line_number] = {
-                        'branch': 'false', 'branches-total': 0,
-                        'branches-covered': 0
-                    }
-                file_lines[line_number]['hits'] = line_hits
-                # Increment lines total/covered for class and package
-                if int(line_hits) > 0:
-                    file_lines_covered += 1
-                file_lines_total += 1
-            elif input_type == 'BRDA':
-                # BRDA:1,1,2,0
-                (line_number, block_number, branch_number, branch_hits) = line_parts[-1].strip().split(',')
-                line_number = int(line_number)
-                if line_number not in file_lines:
-                    file_lines[line_number] = {
-                        'branch': 'true', 'branches-total': 0,
-                        'branches-covered': 0, 'hits': 0
-                    }
-                file_lines[line_number]['branch'] = 'true'
-                file_lines[line_number]['branches-total'] += 1
-                file_branches_total += 1
-                if branch_hits != '-' and int(branch_hits) > 0:
-                    file_lines[line_number]['branches-covered'] += 1
-                    file_branches_covered += 1
-            elif input_type == 'BRF':
-                file_branches_total = int(line_parts[1])
-            elif input_type == 'BRH':
-                file_branches_covered = int(line_parts[1])
-            elif input_type == 'FN':
-                # FN:5,(anonymous_1)
-                function_name = line_parts[-1].strip().split(',')[1]
-                function_name = self.demangle_function_name(function_name)
-                file_methods[function_name] = '0'
-            elif input_type == 'FNDA':
-                # FNDA:0,(anonymous_1)
-                (function_hits, function_name) = line_parts[-1].strip().split(',')
-                function_name = self.demangle_function_name(function_name)
-                file_methods[function_name] = function_hits
-
         # Exclude packages
         excluded = [x for x in coverage_data['packages'] for e in self.excludes
                     if re.match(e, x)]
@@ -266,8 +263,7 @@ class LcovCobertura(object):
 
                 # Process lines
                 lines_el = self._el(document, 'lines', {})
-                lines = list(class_data['lines'].keys())
-                lines.sort()
+                lines = sorted(class_data['lines'].keys())
                 for line_number in lines:
                     line_el = self._el(document, 'line', {
                         'branch': class_data['lines'][line_number]['branch'],
@@ -373,6 +369,6 @@ if __name__ == '__main__':
             with open(options.output, mode='wt') as output_file:
                 output_file.write(cobertura_xml)
         except IOError:
-            sys.stderr.write("Unable to convert %s to Cobertura XML" % args[1])
+            sys.stderr.write(f"Unable to convert {args[1]} to Cobertura XML")
 
     main(sys.argv)
